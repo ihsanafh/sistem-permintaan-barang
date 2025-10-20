@@ -12,8 +12,14 @@ const requestRoutes = require('./src/routes/requestRoutes');
 const reportRoutes = require('./src/routes/reportRoutes');
 
 // Middleware
-app.use(cors());
-app.use(express.json());
+// Middleware
+const corsOptions = {
+  origin: 'https://sistem-permintaan-app.vercel.app', // <-- GANTI DENGAN URL FRONTEND ANDA
+  optionsSuccessStatus: 200
+};
+app.use(cors(corsOptions));
+
+app.use(express.json()); // Mem-parsing body request menjadi JSON
 
 // Gunakan Rute
 app.use('/api/users', userRoutes); // Semua rute di userRoutes akan diawali dengan /api/users
