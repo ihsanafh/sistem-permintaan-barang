@@ -1,138 +1,56 @@
 const { Pool } = require('pg');
 require('dotenv').config();
 
-// Konfigurasi pool database
+// =========================================================
+// SATU-SATUNYA KONFIGURASI DATABASE YANG BENAR UNTUK SELURUH FILE INI
+// =========================================================
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 10000,
-  max: 20
+  ssl: {
+    rejectUnauthorized: false
+  }
 });
 
 // =========================================================
-// GET Available Items - FIXED
-// =========================================================
-exports.getItems = async (req, res) => {
-  console.log('=== GET ITEMS STARTED ===');
-  
-  try {
-    const result = await pool.query(
-      `SELECT item_id, item_name, stock_quantity 
-       FROM items 
-       WHERE stock_quantity > 0 
-       ORDER BY item_name`
-    );
-
-    console.log(`Found ${result.rows.length} available items`);
-    
-    res.status(200).json({
-      success: true,
-      data: result.rows
-    });
-    
-  } catch (err) {
-    console.error('Error in getItems:', err);
-    res.status(500).json({ 
-      success: false,
-      message: 'Gagal memuat daftar barang: ' + err.message 
-    });
-  }
-};
-
-// =========================================================
-// CREATE: Karyawan membuat permintaan baru
+// CREATE: Karyawan membuat permintaan baru (bisa multi-item)
 // =========================================================
 exports.createRequest = async (req, res) => {
-  console.log('=== CREATE REQUEST STARTED ===');
-  console.log('User ID:', req.user?.userId);
-  console.log('Body:', req.body);
-
   const { userId } = req.user;
   const { department, items } = req.body;
 
-  // Validasi
-  if (!userId) {
-    return res.status(401).json({ 
-      success: false, 
-      message: 'User tidak terautentikasi' 
-    });
+  if (!department || !items || !Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ message: 'Departemen dan daftar barang harus diisi.' });
   }
 
-  if (!department || !department.trim()) {
-    return res.status(400).json({ 
-      success: false, 
-      message: 'Departemen harus diisi.' 
-    });
-  }
+  const client = await pool.connect(); // <-- Gunakan pool yang sudah benar
 
-  if (!items || !Array.isArray(items) || items.length === 0) {
-    return res.status(400).json({ 
-      success: false, 
-      message: 'Minimal satu barang harus diminta.' 
-    });
-  }
-
-  const client = await pool.connect();
-  
   try {
-    console.log('Starting transaction...');
     await client.query('BEGIN');
 
-    // Check semua item tersedia
     for (const item of items) {
-      const itemResult = await client.query(
-        `SELECT item_name, stock_quantity 
-         FROM items 
-         WHERE item_id = $1`,
-        [item.item_id]
-      );
-
+      if (!item.item_id || !item.quantity_requested || item.quantity_requested <= 0) {
+        throw new Error('Setiap barang harus memiliki ID dan jumlah yang valid.');
+      }
+      const itemResult = await client.query('SELECT stock_quantity, item_name FROM items WHERE item_id = $1 FOR UPDATE', [item.item_id]);
       if (itemResult.rows.length === 0) {
-        throw new Error(`Barang dengan ID ${item.item_id} tidak ditemukan`);
+        throw new Error(`Barang dengan ID ${item.item_id} tidak ditemukan.`);
       }
-
-      const dbItem = itemResult.rows[0];
-      if (dbItem.stock_quantity < item.quantity_requested) {
-        throw new Error(`Stok "${dbItem.item_name}" tidak mencukupi. Tersedia: ${dbItem.stock_quantity}, Diminta: ${item.quantity_requested}`);
+      if (itemResult.rows[0].stock_quantity < item.quantity_requested) {
+        throw new Error(`Stok untuk "${itemResult.rows[0].item_name}" tidak mencukupi.`);
       }
-
-      // Insert request
       await client.query(
-        `INSERT INTO requests (user_id, item_id, quantity_requested, department, status, request_date) 
-         VALUES ($1, $2, $3, $4, $5, NOW())`,
-        [userId, item.item_id, item.quantity_requested, department.trim(), 'Menunggu Persetujuan Admin']
+        'INSERT INTO requests (user_id, item_id, quantity_requested, department) VALUES ($1, $2, $3, $4)',
+        [userId, item.item_id, item.quantity_requested, department]
       );
     }
 
     await client.query('COMMIT');
-    console.log('=== CREATE REQUEST SUCCESS ===');
-    
-    res.status(201).json({ 
-      success: true,
-      message: 'Semua permintaan berhasil dikirim.' 
-    });
+    res.status(201).json({ message: 'Semua permintaan berhasil dikirim.' });
 
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error('CREATE REQUEST ERROR:', err.message);
-    
-    if (err.message.includes('stock') || err.message.includes('stok') || err.message.includes('cukup')) {
-      res.status(400).json({ 
-        success: false,
-        message: err.message 
-      });
-    } else if (err.message.includes('tidak ditemukan')) {
-      res.status(404).json({ 
-        success: false,
-        message: err.message 
-      });
-    } else {
-      res.status(500).json({ 
-        success: false,
-        message: 'Terjadi kesalahan server: ' + err.message 
-      });
-    }
+    console.error(err.message);
+    res.status(400).json({ message: err.message || 'Server Error' });
   } finally {
     client.release();
   }
@@ -142,53 +60,82 @@ exports.createRequest = async (req, res) => {
 // READ: Karyawan melihat riwayat permintaan pribadinya
 // =========================================================
 exports.getMyRequests = async (req, res) => {
-  console.log('=== GET MY REQUESTS ===');
-  
+  const { userId } = req.user;
   try {
-    const { userId } = req.user;
-    const result = await pool.query(
-      `SELECT r.request_id, r.quantity_requested, r.status, r.department, 
-              r.request_date, i.item_name, u.full_name
+    const myRequests = await pool.query( // <-- Gunakan pool yang sudah benar
+      `SELECT r.request_id, r.quantity_requested, r.status, r.department, r.request_date, i.item_name, u.full_name
        FROM requests r
        JOIN items i ON r.item_id = i.item_id
        JOIN users u ON r.user_id = u.user_id
-       WHERE r.user_id = $1
-       ORDER BY r.request_date DESC`,
+       WHERE r.user_id = $1 ORDER BY r.request_date DESC`,
       [userId]
     );
-
-    res.status(200).json({
-      success: true,
-      data: result.rows
-    });
+    res.status(200).json(myRequests.rows);
   } catch (err) {
-    console.error('Error in getMyRequests:', err);
-    res.status(500).json({ 
-      success: false,
-      message: 'Server error' 
-    });
+    console.error(err.message);
+    res.status(500).send('Server Error');
   }
 };
 
 // =========================================================
-// HEALTH CHECK
+// ADMIN: Mendapatkan semua permintaan dari semua user
 // =========================================================
-exports.healthCheck = async (req, res) => {
+exports.getAllRequests = async (req, res) => {
   try {
-    const dbResult = await pool.query('SELECT NOW() as time');
-    
+    const allRequests = await pool.query( // <-- Gunakan pool yang sudah benar
+      `SELECT r.request_id, r.quantity_requested, r.status, r.department, r.request_date, i.item_name, u.full_name
+       FROM requests r
+       JOIN items i ON r.item_id = i.item_id
+       JOIN users u ON r.user_id = u.user_id
+       ORDER BY r.request_date DESC`
+    );
+    res.status(200).json(allRequests.rows);
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).send('Server Error');
+  }
+};
+
+// =========================================================
+// ADMIN: Memproses permintaan (Setujui atau Tolak)
+// =========================================================
+exports.processRequest = async (req, res) => {
+  const { requestId } = req.params;
+  const { action } = req.body;
+
+  if (!['Selesai', 'Ditolak'].includes(action)) {
+    return res.status(400).json({ message: 'Aksi tidak valid.' });
+  }
+
+  const client = await pool.connect(); // <-- Gunakan pool yang sudah benar
+
+  try {
+    await client.query('BEGIN');
+    const requestResult = await client.query('SELECT * FROM requests WHERE request_id = $1', [requestId]);
+    if (requestResult.rows.length === 0) throw new Error('Permintaan tidak ditemukan.');
+    const request = requestResult.rows[0];
+    if (request.status !== 'Menunggu Persetujuan Admin') throw new Error('Permintaan ini sudah diproses sebelumnya.');
+
+    if (action === 'Selesai') {
+      await client.query(
+        'UPDATE items SET stock_quantity = stock_quantity - $1 WHERE item_id = $2',
+        [request.quantity_requested, request.item_id]
+      );
+    }
+    const updatedRequest = await client.query(
+      "UPDATE requests SET status = $1, processed_date = NOW() WHERE request_id = $2 RETURNING *",
+      [action, requestId]
+    );
+    await client.query('COMMIT');
     res.status(200).json({
-      success: true,
-      status: 'OK',
-      database: { connected: true },
-      timestamp: new Date().toISOString()
+      message: `Permintaan berhasil diubah menjadi "${action}"`,
+      request: updatedRequest.rows[0],
     });
   } catch (err) {
-    console.error('Health check failed:', err);
-    res.status(500).json({
-      success: false,
-      status: 'ERROR',
-      error: err.message
-    });
+    await client.query('ROLLBACK');
+    console.error(err.message);
+    res.status(500).json({ message: err.message || 'Server Error' });
+  } finally {
+    client.release();
   }
 };
