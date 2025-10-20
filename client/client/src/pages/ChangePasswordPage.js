@@ -31,8 +31,13 @@ function ChangePasswordPage() {
 
       setSuccess('Password berhasil diperbarui! Anda akan diarahkan ke dashboard...');
       setTimeout(() => {
-        navigate('/dashboard');
-      }, 2000);
+      const user = JSON.parse(localStorage.getItem('user'));
+      if (user && user.role === 'admin') {
+        navigate('/admin/dashboard'); // Arahkan ke dashboard admin
+      } else {
+        navigate('/dashboard'); // Arahkan ke dashboard biasa
+      }
+    }, 2000);
     } catch (err) {
       setError(err.response?.data?.message || 'Gagal mengubah password.');
     } finally {
