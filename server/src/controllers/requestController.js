@@ -4,14 +4,15 @@ require('dotenv').config();
 // Validasi DATABASE_URL
 if (!process.env.DATABASE_URL) {
   console.error('❌ CRITICAL: DATABASE_URL tidak ditemukan di environment variables!');
-  console.error('Pastikan DATABASE_URL sudah diset di Vercel Dashboard → Settings → Environment Variables');
-} else {
-  console.log('✅ DATABASE_URL ditemukan');
-  // Log partial connection string untuk debug (tanpa password)
-  const urlParts = process.env.DATABASE_URL.split('@');
-  if (urlParts.length > 1) {
-    console.log('Database host:', urlParts[1].split('/')[0]);
-  }
+  throw new Error('DATABASE_URL must be set');
+}
+
+console.log('✅ DATABASE_URL ditemukan');
+
+// Log partial connection string (hide password)
+const urlParts = process.env.DATABASE_URL.split('@');
+if (urlParts.length > 1) {
+  console.log('📡 Database host:', urlParts[1].split('/')[0]);
 }
 
 const pool = new Pool({
@@ -24,12 +25,12 @@ const pool = new Pool({
   max: 10
 });
 
-// Test koneksi database saat startup
+// Error handler
 pool.on('error', (err) => {
   console.error('❌ Database pool error:', err.message);
 });
 
-// Test koneksi
+// Test koneksi saat startup
 pool.query('SELECT NOW()', (err, res) => {
   if (err) {
     console.error('❌ Database connection test FAILED:', err.message);
