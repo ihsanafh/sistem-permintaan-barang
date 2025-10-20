@@ -1,40 +1,58 @@
 const { Pool } = require('pg');
 require('dotenv').config();
 
-// Konfigurasi pool database yang lebih robust
+// Konfigurasi pool database
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 10000,
-  query_timeout: 15000, // Timeout untuk setiap query
-  statement_timeout: 15000,
-  max: 20,
-  allowExitOnIdle: true
+  max: 20
 });
-
-// Handle pool errors
-pool.on('error', (err) => {
-  console.error('Unexpected database pool error:', err);
-});
-
-console.log('Database configured with URL:', process.env.DATABASE_URL ? 'Set' : 'Not set');
 
 // =========================================================
-// CREATE: Karyawan membuat permintaan baru - FIXED VERSION
+// GET Available Items - FIXED
+// =========================================================
+exports.getItems = async (req, res) => {
+  console.log('=== GET ITEMS STARTED ===');
+  
+  try {
+    const result = await pool.query(
+      `SELECT item_id, item_name, stock_quantity 
+       FROM items 
+       WHERE stock_quantity > 0 
+       ORDER BY item_name`
+    );
+
+    console.log(`Found ${result.rows.length} available items`);
+    
+    res.status(200).json({
+      success: true,
+      data: result.rows
+    });
+    
+  } catch (err) {
+    console.error('Error in getItems:', err);
+    res.status(500).json({ 
+      success: false,
+      message: 'Gagal memuat daftar barang: ' + err.message 
+    });
+  }
+};
+
+// =========================================================
+// CREATE: Karyawan membuat permintaan baru
 // =========================================================
 exports.createRequest = async (req, res) => {
   console.log('=== CREATE REQUEST STARTED ===');
   console.log('User ID:', req.user?.userId);
-  console.log('Department:', req.body?.department);
-  console.log('Items:', req.body?.items);
+  console.log('Body:', req.body);
 
   const { userId } = req.user;
   const { department, items } = req.body;
 
-  // Validasi menyeluruh
+  // Validasi
   if (!userId) {
-    console.error('ERROR: User ID tidak ditemukan di token');
     return res.status(401).json({ 
       success: false, 
       message: 'User tidak terautentikasi' 
@@ -55,39 +73,16 @@ exports.createRequest = async (req, res) => {
     });
   }
 
-  // Validasi setiap item
-  for (const [index, item] of items.entries()) {
-    if (!item.item_id || item.item_id <= 0) {
-      return res.status(400).json({ 
-        success: false, 
-        message: `Item ${index + 1}: ID barang tidak valid` 
-      });
-    }
-    
-    if (!item.quantity_requested || item.quantity_requested <= 0) {
-      return res.status(400).json({ 
-        success: false, 
-        message: `Item ${index + 1}: Jumlah harus lebih dari 0` 
-      });
-    }
-  }
-
   const client = await pool.connect();
   
   try {
-    console.log('Database connected, starting transaction...');
-    
-    // Set timeout untuk client ini
-    await client.query('SET statement_timeout = 15000');
+    console.log('Starting transaction...');
     await client.query('BEGIN');
 
-    // 1. CHECK ALL ITEMS FIRST (tanpa FOR UPDATE untuk menghindari deadlock)
-    const itemChecks = [];
+    // Check semua item tersedia
     for (const item of items) {
-      console.log(`Checking item ${item.item_id}...`);
-      
       const itemResult = await client.query(
-        `SELECT item_id, item_name, stock_quantity 
+        `SELECT item_name, stock_quantity 
          FROM items 
          WHERE item_id = $1`,
         [item.item_id]
@@ -98,29 +93,16 @@ exports.createRequest = async (req, res) => {
       }
 
       const dbItem = itemResult.rows[0];
-      itemChecks.push({
-        item_id: dbItem.item_id,
-        item_name: dbItem.item_name,
-        stock_quantity: dbItem.stock_quantity,
-        quantity_requested: item.quantity_requested
-      });
-
-      console.log(`Item ${dbItem.item_name} - Stock: ${dbItem.stock_quantity}, Requested: ${item.quantity_requested}`);
-
       if (dbItem.stock_quantity < item.quantity_requested) {
         throw new Error(`Stok "${dbItem.item_name}" tidak mencukupi. Tersedia: ${dbItem.stock_quantity}, Diminta: ${item.quantity_requested}`);
       }
-    }
 
-    // 2. INSERT ALL REQUESTS
-    console.log('Inserting requests...');
-    for (const item of items) {
+      // Insert request
       await client.query(
         `INSERT INTO requests (user_id, item_id, quantity_requested, department, status, request_date) 
          VALUES ($1, $2, $3, $4, $5, NOW())`,
         [userId, item.item_id, item.quantity_requested, department.trim(), 'Menunggu Persetujuan Admin']
       );
-      console.log(`Request inserted for item ${item.item_id}`);
     }
 
     await client.query('COMMIT');
@@ -132,27 +114,10 @@ exports.createRequest = async (req, res) => {
     });
 
   } catch (err) {
-    console.error('=== CREATE REQUEST ERROR ===');
-    console.error('Error:', err.message);
+    await client.query('ROLLBACK');
+    console.error('CREATE REQUEST ERROR:', err.message);
     
-    try {
-      await client.query('ROLLBACK');
-    } catch (rollbackErr) {
-      console.error('Rollback error:', rollbackErr.message);
-    }
-
-    // Klasifikasi error yang lebih spesifik
-    if (err.message.includes('ECONNREFUSED') || err.message.includes('connection')) {
-      res.status(500).json({ 
-        success: false,
-        message: 'Koneksi database gagal. Silakan coba lagi.' 
-      });
-    } else if (err.message.includes('timeout')) {
-      res.status(500).json({ 
-        success: false,
-        message: 'Timeout. Silakan coba lagi.' 
-      });
-    } else if (err.message.includes('stock') || err.message.includes('stok') || err.message.includes('cukup')) {
+    if (err.message.includes('stock') || err.message.includes('stok') || err.message.includes('cukup')) {
       res.status(400).json({ 
         success: false,
         message: err.message 
@@ -170,7 +135,6 @@ exports.createRequest = async (req, res) => {
     }
   } finally {
     client.release();
-    console.log('Database connection released');
   }
 };
 
@@ -182,8 +146,6 @@ exports.getMyRequests = async (req, res) => {
   
   try {
     const { userId } = req.user;
-    console.log('Fetching requests for user:', userId);
-    
     const result = await pool.query(
       `SELECT r.request_id, r.quantity_requested, r.status, r.department, 
               r.request_date, i.item_name, u.full_name
@@ -191,12 +153,10 @@ exports.getMyRequests = async (req, res) => {
        JOIN items i ON r.item_id = i.item_id
        JOIN users u ON r.user_id = u.user_id
        WHERE r.user_id = $1
-       ORDER BY r.request_date DESC
-       LIMIT 50`, // Batasi hasil untuk performa
+       ORDER BY r.request_date DESC`,
       [userId]
     );
 
-    console.log(`Found ${result.rows.length} requests for user ${userId}`);
     res.status(200).json({
       success: true,
       data: result.rows
@@ -205,73 +165,30 @@ exports.getMyRequests = async (req, res) => {
     console.error('Error in getMyRequests:', err);
     res.status(500).json({ 
       success: false,
-      message: 'Server error: ' + err.message 
+      message: 'Server error' 
     });
   }
 };
 
 // =========================================================
-// GET Available Items
-// =========================================================
-exports.getItems = async (req, res) => {
-  try {
-    console.log('Fetching available items...');
-    const result = await pool.query(
-      `SELECT item_id, item_name, stock_quantity 
-       FROM items 
-       WHERE stock_quantity > 0 
-       ORDER BY item_name
-       LIMIT 100`
-    );
-
-    console.log(`Found ${result.rows.length} available items`);
-    res.status(200).json({
-      success: true,
-      data: result.rows
-    });
-  } catch (err) {
-    console.error('Error in getItems:', err);
-    res.status(500).json({ 
-      success: false,
-      message: 'Gagal memuat daftar barang' 
-    });
-  }
-};
-
-// =========================================================
-// HEALTH CHECK - Enhanced
+// HEALTH CHECK
 // =========================================================
 exports.healthCheck = async (req, res) => {
   try {
-    // Test database connection dengan timeout
-    const dbResult = await Promise.race([
-      pool.query('SELECT NOW() as time, version() as version'),
-      new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Database timeout')), 5000)
-      )
-    ]);
+    const dbResult = await pool.query('SELECT NOW() as time');
     
     res.status(200).json({
       success: true,
       status: 'OK',
-      timestamp: new Date().toISOString(),
-      database: {
-        connected: true,
-        time: dbResult.rows[0].time,
-        version: dbResult.rows[0].version
-      },
-      environment: process.env.NODE_ENV || 'development'
+      database: { connected: true },
+      timestamp: new Date().toISOString()
     });
   } catch (err) {
     console.error('Health check failed:', err);
     res.status(500).json({
       success: false,
       status: 'ERROR',
-      timestamp: new Date().toISOString(),
-      error: err.message,
-      database: { connected: false }
+      error: err.message
     });
   }
 };
-
-module.exports = exports;

@@ -10,13 +10,22 @@ function RequestForm({ onNewRequest }) {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [loading, setLoading] = useState(false);
+  const [itemsLoading, setItemsLoading] = useState(true);
+  
   const user = JSON.parse(localStorage.getItem('user'));
 
+  // Load available items
   useEffect(() => {
     const fetchItems = async () => {
       try {
-        console.log('Fetching items from:', `${process.env.REACT_APP_API_URL}/api/items`);
-        const response = await axios.get(`${process.env.REACT_APP_API_URL}/api/items`);
+        setItemsLoading(true);
+        console.log('Fetching items from API...');
+        
+        const response = await axios.get(
+          `${process.env.REACT_APP_API_URL || 'https://sistem-permintaan-api.vercel.app'}/api/items`
+        );
+        
+        console.log('Items response:', response.data);
         
         if (response.data.success) {
           const formattedItems = response.data.data.map(item => ({
@@ -25,14 +34,18 @@ function RequestForm({ onNewRequest }) {
             stock: item.stock_quantity
           }));
           setAvailableItems(formattedItems);
+          setError('');
         } else {
-          throw new Error(response.data.message || 'Gagal memuat data');
+          throw new Error(response.data.message || 'Gagal memuat data barang');
         }
       } catch (err) {
         console.error('Gagal memuat daftar barang:', err);
-        setError('Gagal memuat daftar barang: ' + err.message);
+        setError('Gagal memuat daftar barang: ' + (err.response?.data?.message || err.message));
+      } finally {
+        setItemsLoading(false);
       }
     };
+    
     fetchItems();
   }, []);
 
@@ -47,8 +60,10 @@ function RequestForm({ onNewRequest }) {
   };
 
   const removeRow = (index) => {
-    const newRows = rows.filter((_, i) => i !== index);
-    setRows(newRows);
+    if (rows.length > 1) {
+      const newRows = rows.filter((_, i) => i !== index);
+      setRows(newRows);
+    }
   };
 
   const handleSubmit = async (e) => {
@@ -57,9 +72,9 @@ function RequestForm({ onNewRequest }) {
     setSuccess('');
     setLoading(true);
 
-    // Validasi frontend
+    // Validasi
     if (!department.trim()) {
-      setError('Departemen harus diisi');
+      setError('Ruangan/Departemen harus diisi');
       setLoading(false);
       return;
     }
@@ -72,7 +87,7 @@ function RequestForm({ onNewRequest }) {
       return;
     }
 
-    // Siapkan payload
+    // Prepare payload
     const payload = {
       department: department.trim(),
       items: rows.map(row => ({
@@ -81,19 +96,19 @@ function RequestForm({ onNewRequest }) {
       }))
     };
 
-    console.log('Submitting payload:', payload);
+    console.log('Submitting request:', payload);
 
     try {
       const token = localStorage.getItem('token');
       const response = await axios.post(
-        `${process.env.REACT_APP_API_URL}/api/requests`,
+        `${process.env.REACT_APP_API_URL || 'https://sistem-permintaan-api.vercel.app'}/api/requests`,
         payload,
         { 
           headers: { 
             Authorization: `Bearer ${token}`,
             'Content-Type': 'application/json'
           },
-          timeout: 30000 // 30 second timeout
+          timeout: 30000
         }
       );
 
@@ -109,14 +124,12 @@ function RequestForm({ onNewRequest }) {
         setError(response.data.message || 'Gagal mengirim permintaan');
       }
     } catch (err) {
-      console.error('Request error:', err);
+      console.error('Submit error:', err);
       
-      if (err.code === 'ECONNABORTED') {
-        setError('Timeout: Permintaan terlalu lama. Silakan coba lagi.');
-      } else if (err.response?.data?.message) {
+      if (err.response?.data?.message) {
         setError(err.response.data.message);
-      } else if (err.message) {
-        setError('Gagal mengirim permintaan: ' + err.message);
+      } else if (err.code === 'ECONNABORTED') {
+        setError('Timeout: Permintaan terlalu lama. Silakan coba lagi.');
       } else {
         setError('Gagal mengirim permintaan. Silakan coba lagi.');
       }
@@ -126,8 +139,8 @@ function RequestForm({ onNewRequest }) {
   };
 
   return (
-    <div className="form-container">
-      <h3>Buat Permintaan Baru</h3>
+    <div className="request-form-container">
+      <h2>Buat Permintaan Baru</h2>
       
       {error && (
         <div className="error-message">
@@ -143,18 +156,15 @@ function RequestForm({ onNewRequest }) {
       )}
 
       <form onSubmit={handleSubmit} className="request-form">
-        <div className="form-section">
-          <div className="form-group">
-            <label>Nama Lengkap</label>
-            <input 
-              type="text" 
-              value={user ? user.full_name || user.fullName : ''} 
-              disabled 
-            />
+        {/* Informasi Pengguna */}
+        <div className="user-info-section">
+          <div className="info-group">
+            <label><strong>Nama Lengkap</strong></label>
+            <div className="user-value">{user ? user.full_name || user.fullName : 'Budi Hartono'}</div>
           </div>
           
-          <div className="form-group">
-            <label htmlFor="department">Ruangan/Departemen</label>
+          <div className="info-group">
+            <label htmlFor="department"><strong>Ruangan/Departemen</strong></label>
             <input
               id="department"
               type="text"
@@ -162,74 +172,85 @@ function RequestForm({ onNewRequest }) {
               onChange={(e) => setDepartment(e.target.value)}
               placeholder="Contoh: Hukum, IT, HRD"
               required
+              className="department-input"
             />
           </div>
         </div>
 
-        <hr />
+        <hr className="divider" />
         
-        <h4>Daftar Barang yang Diminta</h4>
-
-        {rows.map((row, index) => (
-          <div className="form-row item-row" key={index}>
-            <div className="form-group item-select">
-              <label>Nama Barang</label>
-              <Select
-                options={availableItems}
-                value={row.itemId}
-                onChange={(selectedOption) =>
-                  handleRowChange(index, 'itemId', selectedOption)
-                }
-                placeholder="Pilih barang..."
-                isClearable
-                isSearchable
-              />
-            </div>
-
-            <div className="form-group quantity-input">
-              <label>Jumlah</label>
-              <input
-                type="number"
-                min="1"
-                max={row.itemId ? availableItems.find(item => item.value === row.itemId.value)?.stock : undefined}
-                value={row.quantity}
-                onChange={(e) =>
-                  handleRowChange(index, 'quantity', e.target.value)
-                }
-                required
-              />
-            </div>
-
-            {rows.length > 1 && (
-              <button
-                type="button"
-                onClick={() => removeRow(index)}
-                className="remove-row-btn"
-                disabled={loading}
-              >
-                Hapus
-              </button>
-            )}
-          </div>
-        ))}
-
-        <div className="form-actions">
-          <button 
-            type="button" 
-            onClick={addRow} 
-            className="add-row-btn"
-            disabled={loading}
-          >
-            + Tambah Barang
-          </button>
+        {/* Daftar Barang */}
+        <div className="items-section">
+          <h3>Daftar Barang yang Diminta</h3>
           
-          <button 
-            type="submit" 
-            className="submit-button"
-            disabled={loading}
-          >
-            {loading ? 'Mengirim...' : 'Kirim Semua Permintaan'}
-          </button>
+          {itemsLoading ? (
+            <div className="loading-message">Memuat daftar barang...</div>
+          ) : (
+            <>
+              {rows.map((row, index) => (
+                <div className="item-row" key={index}>
+                  <div className="item-select-group">
+                    <label>Nama Barang</label>
+                    <Select
+                      options={availableItems}
+                      value={row.itemId}
+                      onChange={(selectedOption) =>
+                        handleRowChange(index, 'itemId', selectedOption)
+                      }
+                      placeholder="Pilih barang..."
+                      isClearable
+                      isSearchable
+                      isLoading={itemsLoading}
+                    />
+                  </div>
+
+                  <div className="quantity-group">
+                    <label>Jumlah</label>
+                    <input
+                      type="number"
+                      min="1"
+                      value={row.quantity}
+                      onChange={(e) =>
+                        handleRowChange(index, 'quantity', e.target.value)
+                      }
+                      required
+                      className="quantity-input"
+                    />
+                  </div>
+
+                  {rows.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => removeRow(index)}
+                      className="remove-btn"
+                      disabled={loading}
+                    >
+                      Hapus
+                    </button>
+                  )}
+                </div>
+              ))}
+
+              <div className="form-actions">
+                <button 
+                  type="button" 
+                  onClick={addRow} 
+                  className="add-btn"
+                  disabled={loading}
+                >
+                  + Tambah Barang
+                </button>
+                
+                <button 
+                  type="submit" 
+                  className="submit-btn"
+                  disabled={loading || itemsLoading}
+                >
+                  {loading ? 'Mengirim...' : 'Kirim Semua Permintaan'}
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </form>
     </div>
