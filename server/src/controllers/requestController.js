@@ -1,25 +1,14 @@
 const { Pool } = require('pg');
 require('dotenv').config();
+const db = require('../db');
 
-// Konfigurasi Pool dengan error handling yang lebih baik
-if (!process.env.DATABASE_URL) {
-  console.error('DATABASE_URL tidak ditemukan di environment variables!');
-}
-
+// Inilah SATU-SATUNYA pool yang kita gunakan untuk seluruh file
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
-  connectionTimeoutMillis: 10000,
-  idleTimeoutMillis: 30000,
-  max: 10
+  ssl: {
+    rejectUnauthorized: false
+  }
 });
-
-// Test koneksi database
-pool.on('error', (err) => {
-  console.error('Database pool error:', err);
-});
-
-console.log('Database URL exists:', !!process.env.DATABASE_URL);
 
 // =========================================================
 // CREATE: Karyawan membuat permintaan baru (bisa multi-item)
@@ -35,13 +24,14 @@ exports.createRequest = async (req, res) => {
   const client = await pool.connect();
 
   try {
-    await client.query('BEGIN');
+    await client.query('BEGIN'); // Mulai transaksi
 
     for (const item of items) {
       if (!item.item_id || !item.quantity_requested || item.quantity_requested <= 0) {
         throw new Error('Setiap barang harus memiliki ID dan jumlah yang valid.');
       }
 
+      // Kunci baris untuk mencegah race condition dan dapatkan nama barang untuk pesan error
       const itemResult = await client.query(
         'SELECT stock_quantity, item_name FROM items WHERE item_id = $1 FOR UPDATE',
         [item.item_id]
@@ -67,6 +57,7 @@ exports.createRequest = async (req, res) => {
   } catch (err) {
     await client.query('ROLLBACK');
     console.error(err.message);
+    // Kirim pesan error yang lebih spesifik ke frontend
     res.status(400).json({ message: err.message || 'Server Error' });
   } finally {
     client.release();
@@ -80,7 +71,7 @@ exports.getMyRequests = async (req, res) => {
   const { userId } = req.user;
 
   try {
-    const myRequests = await pool.query(
+    const myRequests = await db.query(
       `SELECT
          r.request_id,
          r.quantity_requested,
@@ -109,7 +100,7 @@ exports.getMyRequests = async (req, res) => {
 // =========================================================
 exports.getAllRequests = async (req, res) => {
   try {
-    const allRequests = await pool.query(
+    const allRequests = await db.query(
       `SELECT
          r.request_id,
          r.quantity_requested,
@@ -135,7 +126,7 @@ exports.getAllRequests = async (req, res) => {
 // =========================================================
 exports.processRequest = async (req, res) => {
   const { requestId } = req.params;
-  const { action } = req.body;
+  const { action } = req.body; // action bisa "Selesai" atau "Ditolak"
 
   if (!['Selesai', 'Ditolak'].includes(action)) {
     return res.status(400).json({ message: 'Aksi tidak valid.' });
