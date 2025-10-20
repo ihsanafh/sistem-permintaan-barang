@@ -16,20 +16,21 @@ const pool = new Pool({
 // =========================================================
 exports.createRequest = async (req, res) => {
   const { userId } = req.user;
-  const { department, items } = req.body; // 'items' sekarang adalah array
+  const { department, items } = req.body;
 
   if (!department || !items || !Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ message: 'Departemen dan daftar barang harus diisi.' });
   }
 
   // --- KODE YANG DIPERBAIKI ADA DI SINI ---
-  const securePool = new Pool({
+  const { Pool } = require('pg');
+  const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: {
       rejectUnauthorized: false
     }
   });
-  const client = await securePool.connect();
+  const client = await pool.connect();
   // --- AKHIR DARI KODE YANG DIPERBAIKI ---
 
   try {
@@ -40,6 +41,7 @@ exports.createRequest = async (req, res) => {
         throw new Error('Setiap barang harus memiliki ID dan jumlah yang valid.');
       }
 
+      // Kunci baris untuk mencegah race condition dan dapatkan nama barang untuk pesan error
       const itemResult = await client.query(
         'SELECT stock_quantity, item_name FROM items WHERE item_id = $1 FOR UPDATE',
         [item.item_id]
@@ -65,6 +67,7 @@ exports.createRequest = async (req, res) => {
   } catch (err) {
     await client.query('ROLLBACK');
     console.error(err.message);
+    // Kirim pesan error yang lebih spesifik ke frontend
     res.status(400).json({ message: err.message || 'Server Error' });
   } finally {
     client.release();
