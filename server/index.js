@@ -13,10 +13,25 @@ const reportRoutes = require('./src/routes/reportRoutes');
 
 // Middleware
 // Middleware
+const cors = require('cors');
+
+// Daftar domain yang diizinkan
+const allowedOrigins = ['https://sistem-permintaan-app.vercel.app']; // <-- GANTI DENGAN URL FRONTEND ANDA
+
 const corsOptions = {
-  origin: 'https://sistem-permintaan-app.vercel.app', // <-- GANTI DENGAN URL FRONTEND ANDA
-  optionsSuccessStatus: 200
+  origin: (origin, callback) => {
+    // Izinkan permintaan jika asalnya ada di daftar atau jika tidak ada asal (seperti dari Postman)
+    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  methods: "GET,HEAD,PUT,PATCH,POST,DELETE", // Izinkan semua metode
+  credentials: true,
 };
+
+// Aktifkan CORS dengan konfigurasi di atas
 app.use(cors(corsOptions));
 
 app.use(express.json()); // Mem-parsing body request menjadi JSON
