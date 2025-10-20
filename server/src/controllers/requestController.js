@@ -1,43 +1,25 @@
 const { Pool } = require('pg');
 require('dotenv').config();
 
-// Validasi DATABASE_URL
+// Konfigurasi Pool dengan error handling yang lebih baik
 if (!process.env.DATABASE_URL) {
-  console.error('❌ CRITICAL: DATABASE_URL tidak ditemukan di environment variables!');
-  throw new Error('DATABASE_URL must be set');
-}
-
-console.log('✅ DATABASE_URL ditemukan');
-
-// Log partial connection string (hide password)
-const urlParts = process.env.DATABASE_URL.split('@');
-if (urlParts.length > 1) {
-  console.log('📡 Database host:', urlParts[1].split('/')[0]);
+  console.error('DATABASE_URL tidak ditemukan di environment variables!');
 }
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: {
-    rejectUnauthorized: false
-  },
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
   connectionTimeoutMillis: 10000,
   idleTimeoutMillis: 30000,
   max: 10
 });
 
-// Error handler
+// Test koneksi database
 pool.on('error', (err) => {
-  console.error('❌ Database pool error:', err.message);
+  console.error('Database pool error:', err);
 });
 
-// Test koneksi saat startup
-pool.query('SELECT NOW()', (err, res) => {
-  if (err) {
-    console.error('❌ Database connection test FAILED:', err.message);
-  } else {
-    console.log('✅ Database connected successfully at:', res.rows[0].now);
-  }
-});
+console.log('Database URL exists:', !!process.env.DATABASE_URL);
 
 // =========================================================
 // CREATE: Karyawan membuat permintaan baru (bisa multi-item)
@@ -50,16 +32,7 @@ exports.createRequest = async (req, res) => {
     return res.status(400).json({ message: 'Departemen dan daftar barang harus diisi.' });
   }
 
-  let client;
-  try {
-    client = await pool.connect();
-  } catch (err) {
-    console.error('❌ Failed to connect to database:', err.message);
-    return res.status(500).json({ 
-      message: 'Gagal terhubung ke database. Silakan hubungi administrator.',
-      error: err.message 
-    });
-  }
+  const client = await pool.connect();
 
   try {
     await client.query('BEGIN');
