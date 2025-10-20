@@ -1,25 +1,42 @@
 const { Pool } = require('pg');
 require('dotenv').config();
 
-// Konfigurasi Pool dengan error handling yang lebih baik
+// Validasi DATABASE_URL
 if (!process.env.DATABASE_URL) {
-  console.error('DATABASE_URL tidak ditemukan di environment variables!');
+  console.error('❌ CRITICAL: DATABASE_URL tidak ditemukan di environment variables!');
+  console.error('Pastikan DATABASE_URL sudah diset di Vercel Dashboard → Settings → Environment Variables');
+} else {
+  console.log('✅ DATABASE_URL ditemukan');
+  // Log partial connection string untuk debug (tanpa password)
+  const urlParts = process.env.DATABASE_URL.split('@');
+  if (urlParts.length > 1) {
+    console.log('Database host:', urlParts[1].split('/')[0]);
+  }
 }
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+  ssl: {
+    rejectUnauthorized: false
+  },
   connectionTimeoutMillis: 10000,
   idleTimeoutMillis: 30000,
   max: 10
 });
 
-// Test koneksi database
+// Test koneksi database saat startup
 pool.on('error', (err) => {
-  console.error('Database pool error:', err);
+  console.error('❌ Database pool error:', err.message);
 });
 
-console.log('Database URL exists:', !!process.env.DATABASE_URL);
+// Test koneksi
+pool.query('SELECT NOW()', (err, res) => {
+  if (err) {
+    console.error('❌ Database connection test FAILED:', err.message);
+  } else {
+    console.log('✅ Database connected successfully at:', res.rows[0].now);
+  }
+});
 
 // =========================================================
 // CREATE: Karyawan membuat permintaan baru (bisa multi-item)
@@ -32,7 +49,16 @@ exports.createRequest = async (req, res) => {
     return res.status(400).json({ message: 'Departemen dan daftar barang harus diisi.' });
   }
 
-  const client = await pool.connect();
+  let client;
+  try {
+    client = await pool.connect();
+  } catch (err) {
+    console.error('❌ Failed to connect to database:', err.message);
+    return res.status(500).json({ 
+      message: 'Gagal terhubung ke database. Silakan hubungi administrator.',
+      error: err.message 
+    });
+  }
 
   try {
     await client.query('BEGIN');
