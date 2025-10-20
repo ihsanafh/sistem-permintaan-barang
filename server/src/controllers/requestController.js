@@ -1,12 +1,22 @@
-// GUNAKAN INI SEBAGAI PENGGANTINYA DI ATAS FILE
 const { Pool } = require('pg');
 require('dotenv').config();
 
+// Konfigurasi pool database yang benar
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: {
-    rejectUnauthorized: false
-  }
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 5000,
+  max: 20
+});
+
+// Test connection
+pool.on('connect', () => {
+  console.log('Connected to database');
+});
+
+pool.on('error', (err) => {
+  console.error('Database connection error:', err);
 });
 
 // =========================================================
@@ -16,23 +26,23 @@ exports.createRequest = async (req, res) => {
   const { userId } = req.user;
   const { department, items } = req.body;
 
+  console.log('Received create request:', { userId, department, items });
+
   if (!department || !items || !Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ message: 'Departemen dan daftar barang harus diisi.' });
   }
 
-
-  // GANTI DENGAN INI DI DALAM FUNGSI createRequest
   const client = await pool.connect();
 
   try {
-    await client.query('BEGIN'); // Mulai transaksi
+    await client.query('BEGIN');
 
     for (const item of items) {
       if (!item.item_id || !item.quantity_requested || item.quantity_requested <= 0) {
         throw new Error('Setiap barang harus memiliki ID dan jumlah yang valid.');
       }
 
-      // Kunci baris untuk mencegah race condition dan dapatkan nama barang untuk pesan error
+      // Check item availability
       const itemResult = await client.query(
         'SELECT stock_quantity, item_name FROM items WHERE item_id = $1 FOR UPDATE',
         [item.item_id]
@@ -46,9 +56,10 @@ exports.createRequest = async (req, res) => {
         throw new Error(`Stok untuk "${itemResult.rows[0].item_name}" tidak mencukupi.`);
       }
 
+      // Insert request dengan status default
       await client.query(
-        'INSERT INTO requests (user_id, item_id, quantity_requested, department) VALUES ($1, $2, $3, $4)',
-        [userId, item.item_id, item.quantity_requested, department]
+        'INSERT INTO requests (user_id, item_id, quantity_requested, department, status) VALUES ($1, $2, $3, $4, $5)',
+        [userId, item.item_id, item.quantity_requested, department, 'Menunggu Persetujuan Admin']
       );
     }
 
@@ -57,9 +68,13 @@ exports.createRequest = async (req, res) => {
 
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error(err.message);
-    // Kirim pesan error yang lebih spesifik ke frontend
-    res.status(400).json({ message: err.message || 'Server Error' });
+    console.error('Error in createRequest:', err.message);
+    
+    if (err.message.includes('ECONNREFUSED') || err.message.includes('connection')) {
+      res.status(500).json({ message: 'Database connection error. Please try again.' });
+    } else {
+      res.status(400).json({ message: err.message });
+    }
   } finally {
     client.release();
   }
@@ -72,7 +87,7 @@ exports.getMyRequests = async (req, res) => {
   const { userId } = req.user;
 
   try {
-    const myRequests = await db.query(
+    const myRequests = await pool.query(
       `SELECT
          r.request_id,
          r.quantity_requested,
@@ -91,8 +106,8 @@ exports.getMyRequests = async (req, res) => {
 
     res.status(200).json(myRequests.rows);
   } catch (err) {
-    console.error(err.message);
-    res.status(500).send('Server Error');
+    console.error('Error in getMyRequests:', err.message);
+    res.status(500).json({ message: 'Server Error' });
   }
 };
 
@@ -101,7 +116,7 @@ exports.getMyRequests = async (req, res) => {
 // =========================================================
 exports.getAllRequests = async (req, res) => {
   try {
-    const allRequests = await db.query(
+    const allRequests = await pool.query(
       `SELECT
          r.request_id,
          r.quantity_requested,
@@ -117,8 +132,8 @@ exports.getAllRequests = async (req, res) => {
     );
     res.status(200).json(allRequests.rows);
   } catch (err) {
-    console.error(err.message);
-    res.status(500).send('Server Error');
+    console.error('Error in getAllRequests:', err.message);
+    res.status(500).json({ message: 'Server Error' });
   }
 };
 
@@ -127,7 +142,7 @@ exports.getAllRequests = async (req, res) => {
 // =========================================================
 exports.processRequest = async (req, res) => {
   const { requestId } = req.params;
-  const { action } = req.body; // action bisa "Selesai" atau "Ditolak"
+  const { action } = req.body;
 
   if (!['Selesai', 'Ditolak'].includes(action)) {
     return res.status(400).json({ message: 'Aksi tidak valid.' });
@@ -167,9 +182,30 @@ exports.processRequest = async (req, res) => {
     });
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error(err.message);
+    console.error('Error in processRequest:', err.message);
     res.status(500).json({ message: err.message || 'Server Error' });
   } finally {
     client.release();
+  }
+};
+
+// =========================================================
+// TEST: Endpoint untuk test koneksi database
+// =========================================================
+exports.testDB = async (req, res) => {
+  try {
+    const result = await pool.query('SELECT NOW() as current_time');
+    res.status(200).json({ 
+      message: 'Database connected successfully',
+      time: result.rows[0].current_time,
+      databaseUrl: process.env.DATABASE_URL ? 'DATABASE_URL is set' : 'DATABASE_URL is missing'
+    });
+  } catch (err) {
+    console.error('Database connection test failed:', err);
+    res.status(500).json({ 
+      message: 'Database connection failed',
+      error: err.message,
+      databaseUrl: process.env.DATABASE_URL ? 'DATABASE_URL is set' : 'DATABASE_URL is missing'
+    });
   }
 };
