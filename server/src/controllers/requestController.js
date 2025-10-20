@@ -1,22 +1,14 @@
 const { Pool } = require('pg');
 require('dotenv').config();
 
-// Konfigurasi pool database yang benar
+// =========================================================
+// SATU-SATUNYA KONFIGURASI DATABASE YANG BENAR UNTUK SELURUH FILE INI
+// =========================================================
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 5000,
-  max: 20
-});
-
-// Test connection
-pool.on('connect', () => {
-  console.log('Connected to database');
-});
-
-pool.on('error', (err) => {
-  console.error('Database connection error:', err);
+  ssl: {
+    rejectUnauthorized: false
+  }
 });
 
 // =========================================================
@@ -26,13 +18,11 @@ exports.createRequest = async (req, res) => {
   const { userId } = req.user;
   const { department, items } = req.body;
 
-  console.log('Received create request:', { userId, department, items });
-
   if (!department || !items || !Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ message: 'Departemen dan daftar barang harus diisi.' });
   }
 
-  const client = await pool.connect();
+  const client = await pool.connect(); // <-- Gunakan pool yang sudah benar
 
   try {
     await client.query('BEGIN');
@@ -41,25 +31,16 @@ exports.createRequest = async (req, res) => {
       if (!item.item_id || !item.quantity_requested || item.quantity_requested <= 0) {
         throw new Error('Setiap barang harus memiliki ID dan jumlah yang valid.');
       }
-
-      // Check item availability
-      const itemResult = await client.query(
-        'SELECT stock_quantity, item_name FROM items WHERE item_id = $1 FOR UPDATE',
-        [item.item_id]
-      );
-
+      const itemResult = await client.query('SELECT stock_quantity, item_name FROM items WHERE item_id = $1 FOR UPDATE', [item.item_id]);
       if (itemResult.rows.length === 0) {
         throw new Error(`Barang dengan ID ${item.item_id} tidak ditemukan.`);
       }
-
       if (itemResult.rows[0].stock_quantity < item.quantity_requested) {
         throw new Error(`Stok untuk "${itemResult.rows[0].item_name}" tidak mencukupi.`);
       }
-
-      // Insert request dengan status default
       await client.query(
-        'INSERT INTO requests (user_id, item_id, quantity_requested, department, status) VALUES ($1, $2, $3, $4, $5)',
-        [userId, item.item_id, item.quantity_requested, department, 'Menunggu Persetujuan Admin']
+        'INSERT INTO requests (user_id, item_id, quantity_requested, department) VALUES ($1, $2, $3, $4)',
+        [userId, item.item_id, item.quantity_requested, department]
       );
     }
 
@@ -68,13 +49,8 @@ exports.createRequest = async (req, res) => {
 
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error('Error in createRequest:', err.message);
-    
-    if (err.message.includes('ECONNREFUSED') || err.message.includes('connection')) {
-      res.status(500).json({ message: 'Database connection error. Please try again.' });
-    } else {
-      res.status(400).json({ message: err.message });
-    }
+    console.error(err.message);
+    res.status(400).json({ message: err.message || 'Server Error' });
   } finally {
     client.release();
   }
@@ -85,29 +61,19 @@ exports.createRequest = async (req, res) => {
 // =========================================================
 exports.getMyRequests = async (req, res) => {
   const { userId } = req.user;
-
   try {
-    const myRequests = await pool.query(
-      `SELECT
-         r.request_id,
-         r.quantity_requested,
-         r.status,
-         r.department,
-         r.request_date,
-         i.item_name,
-         u.full_name
+    const myRequests = await pool.query( // <-- Gunakan pool yang sudah benar
+      `SELECT r.request_id, r.quantity_requested, r.status, r.department, r.request_date, i.item_name, u.full_name
        FROM requests r
        JOIN items i ON r.item_id = i.item_id
        JOIN users u ON r.user_id = u.user_id
-       WHERE r.user_id = $1
-       ORDER BY r.request_date DESC`,
+       WHERE r.user_id = $1 ORDER BY r.request_date DESC`,
       [userId]
     );
-
     res.status(200).json(myRequests.rows);
   } catch (err) {
-    console.error('Error in getMyRequests:', err.message);
-    res.status(500).json({ message: 'Server Error' });
+    console.error(err.message);
+    res.status(500).send('Server Error');
   }
 };
 
@@ -116,15 +82,8 @@ exports.getMyRequests = async (req, res) => {
 // =========================================================
 exports.getAllRequests = async (req, res) => {
   try {
-    const allRequests = await pool.query(
-      `SELECT
-         r.request_id,
-         r.quantity_requested,
-         r.status,
-         r.department,
-         r.request_date,
-         i.item_name,
-         u.full_name
+    const allRequests = await pool.query( // <-- Gunakan pool yang sudah benar
+      `SELECT r.request_id, r.quantity_requested, r.status, r.department, r.request_date, i.item_name, u.full_name
        FROM requests r
        JOIN items i ON r.item_id = i.item_id
        JOIN users u ON r.user_id = u.user_id
@@ -132,8 +91,8 @@ exports.getAllRequests = async (req, res) => {
     );
     res.status(200).json(allRequests.rows);
   } catch (err) {
-    console.error('Error in getAllRequests:', err.message);
-    res.status(500).json({ message: 'Server Error' });
+    console.error(err.message);
+    res.status(500).send('Server Error');
   }
 };
 
@@ -148,20 +107,14 @@ exports.processRequest = async (req, res) => {
     return res.status(400).json({ message: 'Aksi tidak valid.' });
   }
 
-  const client = await pool.connect();
+  const client = await pool.connect(); // <-- Gunakan pool yang sudah benar
 
   try {
     await client.query('BEGIN');
-
     const requestResult = await client.query('SELECT * FROM requests WHERE request_id = $1', [requestId]);
-    if (requestResult.rows.length === 0) {
-      throw new Error('Permintaan tidak ditemukan.');
-    }
-
+    if (requestResult.rows.length === 0) throw new Error('Permintaan tidak ditemukan.');
     const request = requestResult.rows[0];
-    if (request.status !== 'Menunggu Persetujuan Admin') {
-      throw new Error('Permintaan ini sudah diproses sebelumnya.');
-    }
+    if (request.status !== 'Menunggu Persetujuan Admin') throw new Error('Permintaan ini sudah diproses sebelumnya.');
 
     if (action === 'Selesai') {
       await client.query(
@@ -169,12 +122,10 @@ exports.processRequest = async (req, res) => {
         [request.quantity_requested, request.item_id]
       );
     }
-
     const updatedRequest = await client.query(
       "UPDATE requests SET status = $1, processed_date = NOW() WHERE request_id = $2 RETURNING *",
       [action, requestId]
     );
-
     await client.query('COMMIT');
     res.status(200).json({
       message: `Permintaan berhasil diubah menjadi "${action}"`,
@@ -182,30 +133,9 @@ exports.processRequest = async (req, res) => {
     });
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error('Error in processRequest:', err.message);
+    console.error(err.message);
     res.status(500).json({ message: err.message || 'Server Error' });
   } finally {
     client.release();
-  }
-};
-
-// =========================================================
-// TEST: Endpoint untuk test koneksi database
-// =========================================================
-exports.testDB = async (req, res) => {
-  try {
-    const result = await pool.query('SELECT NOW() as current_time');
-    res.status(200).json({ 
-      message: 'Database connected successfully',
-      time: result.rows[0].current_time,
-      databaseUrl: process.env.DATABASE_URL ? 'DATABASE_URL is set' : 'DATABASE_URL is missing'
-    });
-  } catch (err) {
-    console.error('Database connection test failed:', err);
-    res.status(500).json({ 
-      message: 'Database connection failed',
-      error: err.message,
-      databaseUrl: process.env.DATABASE_URL ? 'DATABASE_URL is set' : 'DATABASE_URL is missing'
-    });
   }
 };
