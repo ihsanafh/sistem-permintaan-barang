@@ -12,8 +12,6 @@ const requestRoutes = require('./src/routes/requestRoutes');
 const reportRoutes = require('./src/routes/reportRoutes');
 
 // Middleware
-// Middleware
-const cors = require('cors');
 
 // Daftar domain yang diizinkan
 const allowedOrigins = ['https://sistem-permintaan-app.vercel.app']; // <-- GANTI DENGAN URL FRONTEND ANDA
