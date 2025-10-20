@@ -11,14 +11,11 @@ function AdminLoginPage() {
     try {
       const response = await axios.post(
         `${process.env.REACT_APP_API_URL}/api/users/login`,
-        {
-          email,
-          password,
-        }
+        { email, password }
       );
 
       // --- VALIDASI PENTING ---
-      // Periksa apakah pengguna yang login adalah admin
+      // Pastikan hanya admin yang bisa masuk ke halaman ini
       if (response.data.user.role !== 'admin') {
         setError('Akses ditolak. Akun Anda bukan admin.');
         return;
@@ -28,10 +25,19 @@ function AdminLoginPage() {
       localStorage.setItem('token', response.data.token);
       localStorage.setItem('user', JSON.stringify(response.data.user));
 
-      // Arahkan ke dashboard admin
-      navigate('/admin/dashboard');
+      // Cek apakah ini login pertama
+      if (response.data.isFirstLogin) {
+        // Arahkan ke halaman ganti password
+        navigate('/ganti-password');
+      } else {
+        // Arahkan ke dashboard admin
+        navigate('/admin/dashboard');
+      }
+
     } catch (err) {
-      setError(err.response?.data?.message || 'Login gagal. Periksa kembali kredensial Anda.');
+      setError(
+        err.response?.data?.message || 'Login gagal. Periksa kembali kredensial Anda.'
+      );
     }
   };
 
