@@ -1,14 +1,12 @@
-const db = require('../db');
+// GUNAKAN INI SEBAGAI PENGGANTINYA DI ATAS FILE
 const { Pool } = require('pg');
 require('dotenv').config();
 
-// Buat koneksi pool global (untuk route lain)
 const pool = new Pool({
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  host: process.env.DB_HOST,
-  port: process.env.DB_PORT,
-  database: process.env.DB_DATABASE,
+  connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false
+  }
 });
 
 // =========================================================
@@ -22,16 +20,9 @@ exports.createRequest = async (req, res) => {
     return res.status(400).json({ message: 'Departemen dan daftar barang harus diisi.' });
   }
 
-  // --- KODE YANG DIPERBAIKI ADA DI SINI ---
-  const { Pool } = require('pg');
-  const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: {
-      rejectUnauthorized: false
-    }
-  });
+
+  // GANTI DENGAN INI DI DALAM FUNGSI createRequest
   const client = await pool.connect();
-  // --- AKHIR DARI KODE YANG DIPERBAIKI ---
 
   try {
     await client.query('BEGIN'); // Mulai transaksi
