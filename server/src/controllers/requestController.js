@@ -1,12 +1,25 @@
 const { Pool } = require('pg');
 require('dotenv').config();
 
+// Konfigurasi Pool dengan error handling yang lebih baik
+if (!process.env.DATABASE_URL) {
+  console.error('DATABASE_URL tidak ditemukan di environment variables!');
+}
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: {
-    rejectUnauthorized: false
-  }
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+  connectionTimeoutMillis: 10000,
+  idleTimeoutMillis: 30000,
+  max: 10
 });
+
+// Test koneksi database
+pool.on('error', (err) => {
+  console.error('Database pool error:', err);
+});
+
+console.log('Database URL exists:', !!process.env.DATABASE_URL);
 
 // =========================================================
 // CREATE: Karyawan membuat permintaan baru (bisa multi-item)
