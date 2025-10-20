@@ -2,7 +2,7 @@ const db = require('../db');
 const { Pool } = require('pg');
 require('dotenv').config();
 
-// Buat koneksi pool baru
+// Buat koneksi pool global (untuk route lain)
 const pool = new Pool({
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
@@ -16,48 +16,56 @@ const pool = new Pool({
 // =========================================================
 exports.createRequest = async (req, res) => {
   const { userId } = req.user;
-  const { department, items } = req.body; // 'items' sekarang array of { item_id, quantity_requested }
+  const { department, items } = req.body; // 'items' sekarang adalah array
 
-  // Validasi input
   if (!department || !items || !Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ message: 'Departemen dan daftar barang harus diisi.' });
   }
 
-  const client = await pool.connect();
+  // --- KODE YANG DIPERBAIKI ADA DI SINI ---
+  const securePool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: {
+      rejectUnauthorized: false
+    }
+  });
+  const client = await securePool.connect();
+  // --- AKHIR DARI KODE YANG DIPERBAIKI ---
 
   try {
-    await client.query('BEGIN'); // mulai transaksi
+    await client.query('BEGIN'); // Mulai transaksi
 
     for (const item of items) {
       if (!item.item_id || !item.quantity_requested || item.quantity_requested <= 0) {
         throw new Error('Setiap barang harus memiliki ID dan jumlah yang valid.');
       }
 
-      // Cek stok untuk setiap barang
-      const itemResult = await client.query('SELECT stock_quantity FROM items WHERE item_id = $1', [item.item_id]);
+      const itemResult = await client.query(
+        'SELECT stock_quantity, item_name FROM items WHERE item_id = $1 FOR UPDATE',
+        [item.item_id]
+      );
+
       if (itemResult.rows.length === 0) {
         throw new Error(`Barang dengan ID ${item.item_id} tidak ditemukan.`);
       }
 
-      const currentStock = itemResult.rows[0].stock_quantity;
-      if (currentStock < item.quantity_requested) {
-        throw new Error(`Stok tidak mencukupi untuk barang dengan ID ${item.item_id}.`);
+      if (itemResult.rows[0].stock_quantity < item.quantity_requested) {
+        throw new Error(`Stok untuk "${itemResult.rows[0].item_name}" tidak mencukupi.`);
       }
 
-      // Simpan permintaan ke tabel requests
       await client.query(
-        `INSERT INTO requests (user_id, item_id, quantity_requested, department)
-         VALUES ($1, $2, $3, $4)`,
+        'INSERT INTO requests (user_id, item_id, quantity_requested, department) VALUES ($1, $2, $3, $4)',
         [userId, item.item_id, item.quantity_requested, department]
       );
     }
 
     await client.query('COMMIT');
     res.status(201).json({ message: 'Semua permintaan berhasil dikirim.' });
+
   } catch (err) {
     await client.query('ROLLBACK');
     console.error(err.message);
-    res.status(500).json({ message: err.message || 'Server Error' });
+    res.status(400).json({ message: err.message || 'Server Error' });
   } finally {
     client.release();
   }
