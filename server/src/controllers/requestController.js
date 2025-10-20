@@ -1,9 +1,7 @@
+// GUNAKAN INI SEBAGAI PENGGANTINYA DI ATAS FILE
 const { Pool } = require('pg');
 require('dotenv').config();
 
-// =========================================================
-// SATU-SATUNYA KONFIGURASI DATABASE YANG BENAR UNTUK SELURUH FILE INI
-// =========================================================
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: {
@@ -22,22 +20,32 @@ exports.createRequest = async (req, res) => {
     return res.status(400).json({ message: 'Departemen dan daftar barang harus diisi.' });
   }
 
-  const client = await pool.connect(); // <-- Gunakan pool yang sudah benar
+
+  // GANTI DENGAN INI DI DALAM FUNGSI createRequest
+  const client = await pool.connect();
 
   try {
-    await client.query('BEGIN');
+    await client.query('BEGIN'); // Mulai transaksi
 
     for (const item of items) {
       if (!item.item_id || !item.quantity_requested || item.quantity_requested <= 0) {
         throw new Error('Setiap barang harus memiliki ID dan jumlah yang valid.');
       }
-      const itemResult = await client.query('SELECT stock_quantity, item_name FROM items WHERE item_id = $1 FOR UPDATE', [item.item_id]);
+
+      // Kunci baris untuk mencegah race condition dan dapatkan nama barang untuk pesan error
+      const itemResult = await client.query(
+        'SELECT stock_quantity, item_name FROM items WHERE item_id = $1 FOR UPDATE',
+        [item.item_id]
+      );
+
       if (itemResult.rows.length === 0) {
         throw new Error(`Barang dengan ID ${item.item_id} tidak ditemukan.`);
       }
+
       if (itemResult.rows[0].stock_quantity < item.quantity_requested) {
         throw new Error(`Stok untuk "${itemResult.rows[0].item_name}" tidak mencukupi.`);
       }
+
       await client.query(
         'INSERT INTO requests (user_id, item_id, quantity_requested, department) VALUES ($1, $2, $3, $4)',
         [userId, item.item_id, item.quantity_requested, department]
@@ -50,6 +58,7 @@ exports.createRequest = async (req, res) => {
   } catch (err) {
     await client.query('ROLLBACK');
     console.error(err.message);
+    // Kirim pesan error yang lebih spesifik ke frontend
     res.status(400).json({ message: err.message || 'Server Error' });
   } finally {
     client.release();
@@ -61,15 +70,25 @@ exports.createRequest = async (req, res) => {
 // =========================================================
 exports.getMyRequests = async (req, res) => {
   const { userId } = req.user;
+
   try {
-    const myRequests = await pool.query( // <-- Gunakan pool yang sudah benar
-      `SELECT r.request_id, r.quantity_requested, r.status, r.department, r.request_date, i.item_name, u.full_name
+    const myRequests = await db.query(
+      `SELECT
+         r.request_id,
+         r.quantity_requested,
+         r.status,
+         r.department,
+         r.request_date,
+         i.item_name,
+         u.full_name
        FROM requests r
        JOIN items i ON r.item_id = i.item_id
        JOIN users u ON r.user_id = u.user_id
-       WHERE r.user_id = $1 ORDER BY r.request_date DESC`,
+       WHERE r.user_id = $1
+       ORDER BY r.request_date DESC`,
       [userId]
     );
+
     res.status(200).json(myRequests.rows);
   } catch (err) {
     console.error(err.message);
@@ -82,8 +101,15 @@ exports.getMyRequests = async (req, res) => {
 // =========================================================
 exports.getAllRequests = async (req, res) => {
   try {
-    const allRequests = await pool.query( // <-- Gunakan pool yang sudah benar
-      `SELECT r.request_id, r.quantity_requested, r.status, r.department, r.request_date, i.item_name, u.full_name
+    const allRequests = await db.query(
+      `SELECT
+         r.request_id,
+         r.quantity_requested,
+         r.status,
+         r.department,
+         r.request_date,
+         i.item_name,
+         u.full_name
        FROM requests r
        JOIN items i ON r.item_id = i.item_id
        JOIN users u ON r.user_id = u.user_id
@@ -101,20 +127,26 @@ exports.getAllRequests = async (req, res) => {
 // =========================================================
 exports.processRequest = async (req, res) => {
   const { requestId } = req.params;
-  const { action } = req.body;
+  const { action } = req.body; // action bisa "Selesai" atau "Ditolak"
 
   if (!['Selesai', 'Ditolak'].includes(action)) {
     return res.status(400).json({ message: 'Aksi tidak valid.' });
   }
 
-  const client = await pool.connect(); // <-- Gunakan pool yang sudah benar
+  const client = await pool.connect();
 
   try {
     await client.query('BEGIN');
+
     const requestResult = await client.query('SELECT * FROM requests WHERE request_id = $1', [requestId]);
-    if (requestResult.rows.length === 0) throw new Error('Permintaan tidak ditemukan.');
+    if (requestResult.rows.length === 0) {
+      throw new Error('Permintaan tidak ditemukan.');
+    }
+
     const request = requestResult.rows[0];
-    if (request.status !== 'Menunggu Persetujuan Admin') throw new Error('Permintaan ini sudah diproses sebelumnya.');
+    if (request.status !== 'Menunggu Persetujuan Admin') {
+      throw new Error('Permintaan ini sudah diproses sebelumnya.');
+    }
 
     if (action === 'Selesai') {
       await client.query(
@@ -122,10 +154,12 @@ exports.processRequest = async (req, res) => {
         [request.quantity_requested, request.item_id]
       );
     }
+
     const updatedRequest = await client.query(
       "UPDATE requests SET status = $1, processed_date = NOW() WHERE request_id = $2 RETURNING *",
       [action, requestId]
     );
+
     await client.query('COMMIT');
     res.status(200).json({
       message: `Permintaan berhasil diubah menjadi "${action}"`,
