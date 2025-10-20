@@ -84,7 +84,7 @@ function RequestForm({ onNewRequest }) {
         <div className="form-row">
           <div className="form-group">
             <label>Nama Lengkap</label>
-            <input type="text" value={user.fullname} disabled />
+            <input type="text" value={user.fullName} disabled />
           </div>
           <div className="form-group">
             <label htmlFor="department">Ruangan/Departemen</label>
